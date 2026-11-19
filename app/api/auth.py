@@ -1,21 +1,28 @@
 """Auth endpoints."""
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.db.models import User
-from app.db.postgres import get_db
-from app.schemas.auth import LoginRequest, RegisterRequest
-from app.security import (
+from app.core.rate_limit import LOGIN_RATE_LIMIT, limiter
+from app.core.security import (
     create_token,
     current_user,
     hash_password,
     optional_current_user,
     verify_password,
 )
+from app.database.models import User
+from app.database.postgres import get_db
+from app.schemas.auth import LoginRequest, RegisterRequest
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+@router.get("/status")
+def auth_status(db: Session = Depends(get_db)) -> dict:
+    """Whether any user exists (the dashboard offers first-admin setup if not)."""
+    return {"has_users": bool(db.scalar(func.count(User.user_id)))}
 
 
 @router.post("/register", status_code=201)
@@ -65,7 +72,8 @@ def register(
 
 
 @router.post("/login")
-def login(body: LoginRequest, db: Session = Depends(get_db)) -> dict:
+@limiter.limit(LOGIN_RATE_LIMIT)
+def login(request: Request, body: LoginRequest, db: Session = Depends(get_db)) -> dict:
     """Authenticate and return a JWT."""
     user = db.query(User).filter_by(email=str(body.email)).first()
     if not user or not verify_password(body.password, user.password_hash):

@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from app.config import settings
+from app.core.config import settings
 
 
 def _clean(values: np.ndarray, minimum_rows: int = 30) -> np.ndarray:

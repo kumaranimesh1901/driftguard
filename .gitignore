@@ -1,16 +1,18 @@
+# Environment and secrets
 .env
-__pycache__/
-.pytest_cache/
-.ruff_cache/
-*.py[cod]
-.coverage
-*.log
+.venv/
+
+# Runtime output (logs, process ids, trained model artifacts)
+logs/
+.run/
 artifacts/*
 !artifacts/.gitkeep
-data/raw/*
-data/generated/*
-!data/raw/.gitkeep
-!data/generated/.gitkeep
-experiments/results/*
-!experiments/results/.gitkeep
+
+# Python / tooling caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+*.log
 .DS_Store
