@@ -1,0 +1,16 @@
+.env
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.py[cod]
+.coverage
+*.log
+artifacts/*
+!artifacts/.gitkeep
+data/raw/*
+data/generated/*
+!data/raw/.gitkeep
+!data/generated/.gitkeep
+experiments/results/*
+!experiments/results/.gitkeep
+.DS_Store
