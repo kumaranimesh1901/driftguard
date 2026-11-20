@@ -74,6 +74,7 @@ def render() -> None:
         return
 
     _summary_row(report)
+    _drift_types(report)
 
     tab_key, tab_table, tab_inspect = st.tabs(
         [
@@ -91,6 +92,38 @@ def render() -> None:
 
     with tab_inspect:
         _feature_inspector(report)
+
+
+def _drift_types(report: dict[str, Any]) -> None:
+    """Data drift / prediction drift / concept drift / degradation, kept separate."""
+    t = report.get("drift_types")
+    if not t:
+        return
+
+    def show(v: Any) -> str:
+        return "Unknown (no labels)" if v is None else ("Yes" if v else "No")
+
+    cols = st.columns(4)
+    cols[0].metric("Data drift", show(t["data_drift"]))
+    cols[1].metric("Prediction drift (ADWIN / KS)", show(t["prediction_drift"]))
+    cols[2].metric("Concept drift suspected", show(t["concept_drift_suspected"]))
+    cols[3].metric("Confirmed degradation", show(t["confirmed_degradation"]))
+    streams = (report.get("model_health") or {}).get("streams") or {}
+    pred = streams.get("prediction") or {}
+    if pred.get("detected"):
+        st.caption(
+            f"ADWIN detected a change in the predicted-probability stream at production record "
+            f"{pred['first_detection_index']} (reference mean {pred['reference_mean']:.3f} → "
+            f"production mean {pred['production_mean']:.3f})."
+        )
+    for n in t.get("notes", []):
+        st.caption(n)
+    if report.get("leakage_warning"):
+        st.warning(
+            "The current champion was trained on part of: "
+            + ", ".join(report["leakage_warning"])
+            + ". Performance on these batches is optimistic."
+        )
 
 
 def _key_feature_grid(report: dict[str, Any]) -> None:

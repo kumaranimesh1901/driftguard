@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     conventional_psi: float = 0.25
     conventional_ks_p: float = 0.01
     conventional_jsd: float = 0.1
+    # Champion-challenger retraining: minimum AUC gain on the independent
+    # test split before an administrator may deploy a challenger.
+    retrain_min_gain_auc: float = 0.01
+    retrain_min_production_labels: int = 200
+    # ADWIN (River) sensitivity for the prediction / error streams.
+    adwin_delta: float = 0.002
 
     @model_validator(mode="after")
     def validate_production_secret(self) -> "Settings":

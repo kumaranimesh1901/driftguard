@@ -7,9 +7,19 @@
 **Student Name:** Animesh  
 **University Seat Number (USN):** 1RV24CD028  
 **Faculty In-Charge:** Course Faculty, Dept. of CSE, RVCE  
-**Document Version:** 1.0 (Final Comprehensive Report)  
+**Document Version:** 1.1 (corrected after code audit, 20 Nov 2026)  
 
 ---
+
+> **CORRECTION NOTICE (code audit, 20 Nov 2026).** Parts of this report described an earlier version of the code or planned features. The statements below supersede the rest of the document where they conflict.
+>
+> - **ADWIN** was not implemented when this report was written. It now is (`app/services/drift/adwin.py`, River), on two defined model streams: predicted probability (prediction drift) and |y − p| (error level, labelled batches only). It is not used for feature-distribution drift.
+> - **Champion–challenger retraining, deploy and rollback** (FR-19, FR-20, Objective 6) did not exist. They now do (`app/services/monitoring/retraining.py`, `/api/v1/banking/models/*`). The earlier demonstration figures "AUC 0.84 → 0.75" and "AUC gain +0.08" were **not measured results** and have been removed. Section 9.2 now gives the real demonstration with measured values.
+> - The dataset is the synthetic banking credit-risk data (`app/services/synthetic_data.py`, `data/`): 11 numerical + 1 categorical monitored features. `loan_data_synthetic.csv` and `app/simulation/generator.py` are no longer part of the project.
+> - The coverage table in Section 11.1 was from an old snapshot (13 tests, 58%). The current measured result is given there.
+> - **Research results** are now measured (Section 11.4, `docs/experiments/`). Model-aware ranking (D×FI and DIS) prioritises consequential drift clearly better than conventional PSI ranking. The sensitivity factor S does **not** add measurable value over D×FI in this setup. No drift score predicts the real AUC drop, so performance claims require labels.
+> - All results come from **synthetic** data and one model family (XGBoost). They are evidence for this prototype, not a general claim.
+
 
 ## EXECUTIVE SUMMARY / ABSTRACT
 
@@ -761,17 +771,18 @@ DriftGuard explicitly avoids storing unstructured or rapidly growing event strea
 +-------------------------------------------------+--------------------------------------------------+
 ```
 
-### 9.2 The 8-Step Live Demonstration Protocol
-The system demonstration follows an 8-step script:
+### 9.2 Live Demonstration Protocol (measured on the current code)
 
-1. **Step 1 (Authentication & Role Verification):** Log in as an Administrator (`admin@example.com`); verify that administrative controls (Retraining, Thresholds) are visible. Re-login as a Reviewer; verify UI is strictly read-only.
-2. **Step 2 (Dataset Ingestion & Profiling):** Upload `loan_data_synthetic.csv`. Observe automatic identification of 8 numerical and 3 categorical columns, missing value checks, and baseline default rate verification (~17%).
-3. **Step 3 (Model Training & Reference Profiling):** Train an XGBoost baseline classifier. Observe generation of `artifacts/models/1.joblib` and reference quantiles in `artifacts/reference/1.json`. Model status is marked `champion`.
-4. **Step 4 (Baseline Batch Processing - No Drift):** Submit Batch 1 (1,000 clean records). Monitoring executes: all feature drift scores remain below noise floors ($D_i \approx 0$). Status: `Continue monitoring` (No alert).
-5. **Step 5 (Injected Drift - Income Shock):** Submit Batch 2 with a +1.5 standard deviation shift on `income`. Drift engine flags high PSI (0.97) and KS (0.23). SHAP confirms high importance. Alert raised: **DRIFT-WARNING (Level: High)**.
-6. **Step 6 (Delayed Label Ingestion & Degradation Confirmation):** Submit delayed true labels for Batch 2. Model ROC-AUC drops from 0.84 to 0.75 (below the `PERF_SEVERE_DROP` threshold). Alert escalates to: **CONFIRMED-DEGRADATION**.
-7. **Step 7 (Retraining & Champion-Challenger Promotion):** Administrator requests retraining. System trains XGBoost v2 on combined data, evaluates on held-out post-drift test set, confirms AUC gain (+0.08), and atomically promotes challenger to `champion` while archiving previous model as `retired`.
-8. **Step 8 (Live Database Query Execution):** Run queries `S2`, `S5`, `S10` on PostgreSQL and `N2`, `N5` on MongoDB to demonstrate dual-database data retrieval.
+All data is synthetic. The numbers are from the audit run on 20 Nov 2026 (`POST /simulation/seed-demo`, PostgreSQL 16 + MongoDB). Exact values vary slightly by seed.
+
+1. **Authentication & roles.** The first user must be an administrator (otherwise 403). After that, only administrators can create users. A reviewer is read-only: uploading returns 403. A tampered or expired JWT returns 401, a duplicate email 409, and a weak password 422.
+2. **Baseline registration.** The 2020 baseline (2,500 records, 12 monitored features, `loan_default` labels) is validated and profiled into `features.reference_stats`. An XGBoost pipeline is trained (`models` v1, `champion`). Holdout metrics on a 25% stratified split: ROC-AUC ≈ 0.65, accuracy ≈ 0.76, F1 ≈ 0.31.
+3. **Stable batch (January, scenario A).** DIS = 0.000, LOW RISK, "Continue monitoring". No alert. ADWIN finds no prediction-stream change.
+4. **Moderate drift (March, scenario B: income +22%).** DIS ≈ 0.14–0.20, MEDIUM RISK, `drift-warning`. Labels are pending, so the system says degradation cannot be confirmed.
+5. **Severe drift (June / September, scenarios C / D).** DIS ≈ 1.0, HIGH RISK. Debt-to-income and credit score rank first by DIS. September has labels and its performance is **stable**: high drift does not by itself mean degradation.
+6. **Concept shift with labels (November).** Production AUC 95% CI ≈ [0.46, 0.50] against a baseline AUC of 0.65, so the state is `severe`. This raises `confirmed-degradation` and CRITICAL RISK. The drift types read: data drift yes, prediction drift yes, confirmed degradation yes.
+7. **Controlled retraining.** An administrator trains a challenger from November's labelled records (960 training rows plus the baseline training split; 640 rows form the independent post-drift test set). Measured AUC gain on that test set: **+0.268 (95% CI 0.210–0.330)**, with no regression on the baseline holdout. The administrator approves deployment: v1 → `retired`, v2 → `champion` in one transaction. Rollback restores v1 and sets `rollback_flag`.
+8. **Database queries.** Run the SQL (S1–S10) and MongoDB (N1–N5) queries of Component 4 to show both stores in use.
 
 ---
 
@@ -812,27 +823,13 @@ To evaluate the multiplicative formulation, DriftGuard implements four ablation 
 # 11. COMPONENT 11: FINAL REPORT & VERIFICATION AUDIT
 
 ### 11.1 Independent Verification Audit Summary
-In accordance with rigorous academic engineering standards, the codebase underwent an automated adversarial verification audit. The key results are summarized below:
 
-```
-================================ TESTS COVERAGE ================================
-Name                              Stmts   Miss  Cover   Missing
----------------------------------------------------------------
-app/__init__.py                       0      0   100%
-app/config.py                        40      1    98%   Line 51
-app/logging_config.py                 3      3     0%   Lines 3-8
-app/main.py                          42     42     0%   Lines 3-60
-app/security.py                      46     46     0%   Lines 3-99
-app/services/decision.py              8      2    75%   Lines 7, 32
-app/services/drift/jsd.py             6      0   100%
-app/services/drift/normalise.py       4      1    75%   Line 7
-app/services/drift/psi.py            34      8    76%   Lines 13, 26, 50-57
-app/services/explain/dis.py          15      2    87%   Lines 12, 14
-app/simulation/generator.py          77     10    87%   Lines 32, 34, 123...
----------------------------------------------------------------
-TOTAL                               275    115    58%
-13 passed, 1 warning in 0.89s
-```
+Code audit of 20 Nov 2026 (Python 3.11.15 on macOS Apple Silicon; test suite uses in-memory SQLite + mongomock; real PostgreSQL / MongoDB checked separately via Docker):
+
+- `pytest`: **77 passed, 0 failed, 0 skipped** (66 original + 11 new regression tests).
+- `ruff check app frontend tests scripts`: **All checks passed**.
+- Noise-floor calibration was fixed. Averaged across 10 reference samples ($N=2500$, $n=1000$, $b=300$, 200 trials each), the false-alarm rate at the 95% floor went from 0.55% (PSI) / 0.85% (KS) to 7.35% / 4.10% (nominal 5%).
+- Independent numerical checks against hand calculations (in `tests/test_drift_methods.py`) and end-to-end API/auth/retraining workflows (in `tests/test_api_auth.py`, `tests/test_banking_platform.py`, `tests/test_audit_fixes.py`) all pass.
 
 ### 11.2 Measured Numerical Drift Properties
 
@@ -847,6 +844,26 @@ TOTAL                               275    115    58%
 | **Normalisation Floor** | Effect size below noise floor ($0.02 < 0.05$) | `0.0` | **PASS** (Noise clamped to zero) |
 | **Synthetic Defaults** | 20,000 generated loan applications | Mean default rate: `17.04%` | **PASS** (Calibrated in $[13\%, 22\%]$) |
 | **DIS Bounds & Ties** | Hand-computed test matrix | $DIS \in [0, 1]$, average tie rank | **PASS** (Exact hand match) |
+
+### 11.4 Research Experiment: DIS vs Conventional Drift Alerts (measured)
+
+`scripts/experiments/dis_prioritisation.py`: 10 seeds and 110 synthetic batches (designed scenarios B–D, their concept-shift variants, and 40 random multi-feature drifts); 70 covariate-shift batches are used for ranking. **Ground truth:** for each feature, undo its drift (quantile-map it back onto the reference distribution) and measure how much the deployed model's predictions change.
+
+| Method | Spearman | Precision@3 | NDCG@3 |
+|---|---|---|---|
+| Conventional PSI ranking | 0.626 | 0.638 | 0.774 [0.729, 0.817] |
+| D only (normalised drift) | 0.665 | 0.695 | 0.829 [0.795, 0.862] |
+| D × FI | 0.704 | 0.824 | **0.932** [0.910, 0.953] |
+| DIS = D × FI × S | 0.702 | **0.833** | 0.910 [0.876, 0.938] |
+
+Interpretation:
+
+1. **Supported:** adding model-specific importance clearly improves prioritisation over conventional drift ranking (NDCG@3 +0.136; DIS is better in 63% of batches and equal in 13%).
+2. **Not supported:** the sensitivity factor S. D×FI matches or beats DIS in 89% of batches, and S correlates strongly with FI, so DIS ≈ D × FI².
+3. **Alert quality:** DIS alerts (DIS ≥ 0.05) are more precise (1.000 vs 0.935) but have lower recall (0.396 vs 0.549) than the conventional PSI/KS/JSD rule. This is a threshold trade-off.
+4. **Performance:** no drift score correlates with the real AUC drop (Spearman −0.180 to −0.063). Covariate shift raises DIS without harming AUC, and concept shift harms AUC with DIS ≈ 0. Performance changes must therefore come from labels, as the decision engine already requires.
+
+Limitations: synthetic data, one model family, a model-output-based ground truth (aligned with what "consequential" means here, but partly favouring model-aware methods), and thresholds not tuned.
 
 ### 11.3 Project Health & Honest Boundary Statement
 - **Foundations Completed:** Full database DDL, MongoDB collection schemas, Argon2id/JWT security, synthetic loan generation, univariate statistical drift engines (PSI, KS, JSD), and DIS mathematical formulations are fully verified and passing.

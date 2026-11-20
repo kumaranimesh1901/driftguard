@@ -46,11 +46,29 @@ def risk_assessment(
     else:
         category = "LOW RISK"
 
+    # Features whose distribution moved (D severity) even though their model
+    # impact (DIS) kept the batch level low: not a model risk, but possibly a
+    # data-quality or pipeline issue that must not be reported as "stable".
+    low_impact_drift = [
+        f["label"]
+        for f in ranked
+        if f["severity"] == "high" and f.get("dis", 0.0) < settings.batch_dis_moderate
+    ]
     if category == "LOW RISK":
-        actions = [
-            "Distributions remain relatively stable against the 2020 baseline.",
-            "Continue normal monitoring cadence.",
-        ]
+        actions = (
+            [
+                "Distributions remain relatively stable against the 2020 baseline.",
+                "Continue normal monitoring cadence.",
+            ]
+            if not affected
+            else [
+                (
+                    "Some attributes changed distribution, but the changes have low "
+                    "estimated model impact (DIS below the moderate threshold)."
+                ),
+                "Continue monitoring; no model action is indicated by DIS.",
+            ]
+        )
     elif category == "MEDIUM RISK":
         actions = [
             "Some financial attributes show statistically significant changes.",
@@ -81,6 +99,16 @@ def risk_assessment(
             ),
             "Notify the credit risk committee immediately.",
         ]
+    if low_impact_drift:
+        actions.append(
+            "Check data quality / upstream pipelines for strongly shifted but "
+            "low-impact attributes: " + ", ".join(low_impact_drift[:5])
+        )
+        if alert_type is None:
+            recommendation = (
+                recommendation
+                + "; verify data quality of strongly drifted low-impact features"
+            )
     if perf == "unknown":
         actions.append(
             f"Collect production default outcomes (at least {settings.min_labels} "
@@ -118,4 +146,5 @@ def risk_assessment(
         "recommended_actions": actions,
         "evidence": evidence,
         "affected_features": affected,
+        "low_impact_drift_features": low_impact_drift,
     }

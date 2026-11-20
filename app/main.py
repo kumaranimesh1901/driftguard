@@ -37,7 +37,9 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="DriftGuard", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8501", "*"],
+    # The Streamlit dashboard calls the API server-side, so browsers only need
+    # the dashboard origin. A wildcard together with credentials is unsafe.
+    allow_origins=["http://localhost:8501", "http://127.0.0.1:8501"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

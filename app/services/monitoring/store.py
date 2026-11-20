@@ -9,6 +9,8 @@ MongoDB (flexible / large documents):
     production_batches   batch metadata and processing history
     root_cause_reports   full analysis report per monitoring job
     drift_events         per-feature detector values per job
+    stream_events        ADWIN prediction / error stream results per job
+    model_evaluations    champion-vs-challenger evaluation records
     monitoring_logs      audit trail
 """
 
@@ -24,6 +26,7 @@ from pymongo import ASCENDING, DESCENDING
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.database import mongo
 from app.database.models import (
     Alert,
@@ -221,8 +224,9 @@ def register_baseline(
         )
     try:
         model_obj, metrics = credit_model.train_baseline_model(df)
+        holdout = metrics.pop("_holdout", None)
         metrics["artifact_path"] = credit_model.save_model(
-            model_obj, dataset.dataset_id
+            model_obj, dataset.dataset_id, 1, holdout
         )
         metrics["has_model"] = True
         algorithm = credit_model.ALGORITHM
@@ -273,7 +277,7 @@ def current_baseline_meta() -> dict[str, Any] | None:
 
 def baseline_summary(session: Session, meta: dict[str, Any]) -> dict[str, Any]:
     """Baseline metadata joined with its PostgreSQL dataset/model/features."""
-    model_row = session.get(Model, meta["model_id"])
+    model_row = session.get(Model, champion_model_id(session, meta))
     features = session.scalars(
         select(Feature)
         .where(Feature.dataset_id == meta["dataset_id"])
@@ -294,6 +298,8 @@ def baseline_summary(session: Session, meta: dict[str, Any]) -> dict[str, Any]:
         "created_at": iso(meta.get("created_at")),
         "created_by": meta.get("created_by"),
         "model": {
+            "model_id": model_row.model_id if model_row else None,
+            "version": model_row.version if model_row else None,
             "algorithm": model_row.algorithm if model_row else None,
             "status": model_row.status if model_row else None,
             "trained_at": iso(model_row.trained_at) if model_row else None,
@@ -312,6 +318,52 @@ def load_baseline() -> tuple[dict[str, Any], pd.DataFrame]:
     if not meta:
         raise LookupError("No historical baseline is registered.")
     return meta, read_records(_owner_baseline(meta["dataset_id"]))
+
+
+def champion_model_id(session: Session, base_meta: dict[str, Any]) -> int:
+    """Current champion for the active baseline dataset (changes after a deploy)."""
+    row = session.scalar(
+        select(Model.model_id).where(
+            Model.dataset_id == base_meta["dataset_id"], Model.status == "champion"
+        )
+    )
+    return int(row) if row is not None else int(base_meta["model_id"])
+
+
+_RESULT_SETTINGS = (
+    "psi_bins",
+    "null_bootstrap_b",
+    "null_quantile",
+    "norm_cap_psi",
+    "norm_cap_ks",
+    "norm_cap_jsd",
+    "d_aggregation",
+    "severity_moderate",
+    "severity_high",
+    "batch_dis_moderate",
+    "batch_dis_high",
+    "perf_meaningful_drop",
+    "perf_severe_drop",
+    "perf_bootstrap_b",
+    "sensitivity_repeats",
+    "shap_sample_size",
+    "min_labels",
+    "conventional_psi",
+    "conventional_ks_p",
+    "conventional_jsd",
+    "adwin_delta",
+    "random_seed",
+)
+
+
+def settings_fingerprint() -> str:
+    """Short hash of every setting that changes analysis results.
+
+    Part of the analysis-reuse signature, so editing a threshold in ``.env``
+    never returns a stale stored report.
+    """
+    payload = "|".join(f"{k}={getattr(settings, k)}" for k in _RESULT_SETTINGS)
+    return "cfg:" + hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
 @lru_cache(maxsize=8)
@@ -554,35 +606,58 @@ def complete_job(
     report["alert_id"] = alert_id
     job.status = "completed"
     m = db()
-    m.root_cause_reports.replace_one({"job_id": job.job_id}, report, upsert=True)
-    m.drift_events.insert_many(
-        [
+    events = [
+        {
+            "job_id": job.job_id,
+            "batch_id": report["batch_id"],
+            "feature": fr["feature"],
+            "psi": fr["psi"],
+            "ks_stat": fr["ks_stat"],
+            "ks_p": fr["ks_p"],
+            "jsd": fr["jsd"],
+            "floors": fr["floors"],
+            "normalised": fr["normalised"],
+            "detector_agreement": fr.get("detector_agreement"),
+            "d": fr["d"],
+            "dis": fr["dis"],
+            "severity": fr["severity"],
+            "exceeded_conventional": fr["conventional_alert"],
+            "histogram": report["distributions"].get(fr["feature"]),
+            "created_at": report["analysed_at"],
+        }
+        for fr in report["feature_details"]
+    ]
+    # Both Mongo writes and the PostgreSQL commit are inside one compensation
+    # block: if *any* of them fails, nothing for this job survives in either
+    # store (previously a failed drift_events insert left an orphan report).
+    try:
+        m.root_cause_reports.replace_one({"job_id": job.job_id}, report, upsert=True)
+        if events:
+            m.drift_events.insert_many(events)
+        streams = (report.get("model_health") or {}).get("streams") or {}
+        stream_docs = [
             {
                 "job_id": job.job_id,
                 "batch_id": report["batch_id"],
-                "feature": fr["feature"],
-                "psi": fr["psi"],
-                "ks_stat": fr["ks_stat"],
-                "ks_p": fr["ks_p"],
-                "jsd": fr["jsd"],
-                "floors": fr["floors"],
-                "normalised": fr["normalised"],
-                "d": fr["d"],
-                "dis": fr["dis"],
-                "severity": fr["severity"],
-                "exceeded_conventional": fr["conventional_alert"],
-                "histogram": report["distributions"].get(fr["feature"]),
+                "model_id": report.get("model_id"),
+                "stream": name,
+                **result,
                 "created_at": report["analysed_at"],
             }
-            for fr in report["feature_details"]
+            for name, result in streams.items()
+            if name in ("prediction", "error") and result
         ]
-    )
-    try:
+        if stream_docs:
+            m.stream_events.insert_many(stream_docs)
         session.commit()
     except Exception:
         session.rollback()
-        m.root_cause_reports.delete_one({"job_id": job.job_id})
-        m.drift_events.delete_many({"job_id": job.job_id})
+        try:
+            m.root_cause_reports.delete_one({"job_id": job.job_id})
+            m.drift_events.delete_many({"job_id": job.job_id})
+            m.stream_events.delete_many({"job_id": job.job_id})
+        except Exception:
+            logger.exception("Compensation of Mongo writes failed for job %s", job.job_id)
         raise
 
 

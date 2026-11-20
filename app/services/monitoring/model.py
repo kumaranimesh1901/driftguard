@@ -112,6 +112,37 @@ def classification_metrics(
     }
 
 
+def split_labelled(
+    df: pd.DataFrame, seed: int = settings.random_seed, test_size: float = 0.25
+) -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray, np.ndarray]:
+    """Deterministic stratified train/holdout split of the labelled rows."""
+    labelled = df[df[LABEL_COLUMN].notna()]
+    y = labelled[LABEL_COLUMN].astype(int).to_numpy()
+    if len(y) < MIN_TRAIN_LABELS or len(np.unique(y)) < 2:
+        raise ModelUnavailableError(
+            f"Baseline needs at least {MIN_TRAIN_LABELS} labelled records with both "
+            "default and non-default outcomes to train a credit-risk model."
+        )
+    x = _features(labelled)
+    return train_test_split(x, y, test_size=test_size, stratify=y, random_state=seed)
+
+
+def fit_pipeline(x_tr: pd.DataFrame, y_tr: np.ndarray, seed: int) -> Pipeline:
+    """Fit the preprocessing + XGBoost pipeline with class-imbalance weighting."""
+    pos = max(int(y_tr.sum()), 1)
+    model = _build_pipeline((len(y_tr) - pos) / pos, seed)
+    model.fit(x_tr, y_tr)
+    return model
+
+
+def select_threshold(model: Pipeline, x_tr: pd.DataFrame, y_tr: np.ndarray) -> float:
+    """F1-maximising decision threshold chosen on the *training* split only."""
+    train_prob = model.predict_proba(x_tr)[:, 1]
+    grid = np.linspace(0.05, 0.95, 91)
+    f1s = [f1_score(y_tr, (train_prob >= t).astype(int), zero_division=0) for t in grid]
+    return float(grid[int(np.argmax(f1s))])
+
+
 def train_baseline_model(
     baseline: pd.DataFrame, seed: int = settings.random_seed
 ) -> tuple[Pipeline, dict[str, Any]]:
@@ -120,25 +151,10 @@ def train_baseline_model(
     The decision threshold maximises F1 on the training split (not the holdout),
     so holdout metrics stay an honest estimate.
     """
-    labelled = baseline[baseline[LABEL_COLUMN].notna()]
-    y = labelled[LABEL_COLUMN].astype(int).to_numpy()
-    if len(y) < MIN_TRAIN_LABELS or len(np.unique(y)) < 2:
-        raise ModelUnavailableError(
-            f"Baseline needs at least {MIN_TRAIN_LABELS} labelled records with both "
-            "default and non-default outcomes to train a credit-risk model."
-        )
-    x = _features(labelled)
-    x_tr, x_te, y_tr, y_te = train_test_split(
-        x, y, test_size=0.25, stratify=y, random_state=seed
-    )
-    pos = max(int(y_tr.sum()), 1)
-    model = _build_pipeline((len(y_tr) - pos) / pos, seed)
-    model.fit(x_tr, y_tr)
+    x_tr, x_te, y_tr, y_te = split_labelled(baseline, seed)
+    model = fit_pipeline(x_tr, y_tr, seed)
 
-    train_prob = model.predict_proba(x_tr)[:, 1]
-    grid = np.linspace(0.05, 0.95, 91)
-    f1s = [f1_score(y_tr, (train_prob >= t).astype(int), zero_division=0) for t in grid]
-    threshold = float(grid[int(np.argmax(f1s))])
+    threshold = select_threshold(model, x_tr, y_tr)
 
     hold_prob = model.predict_proba(x_te)[:, 1]
     metrics = classification_metrics(y_te, hold_prob, threshold)
@@ -148,21 +164,49 @@ def train_baseline_model(
             "threshold": threshold,
             "n_train": len(y_tr),
             "n_holdout": len(y_te),
-            "baseline_default_rate": float(np.mean(y)),
+            "baseline_default_rate": float(np.mean(np.r_[y_tr, y_te])),
             "algorithm": ALGORITHM,
             "evaluation": "25% stratified holdout of the baseline",
+            "version": 1,
         }
     )
+    metrics["_holdout"] = (hold_prob, y_te)
     return model, metrics
 
 
-def save_model(model: Pipeline, dataset_id: int) -> str:
-    """Persist the model artifact and return its path."""
+def save_model(
+    model: Pipeline,
+    dataset_id: int,
+    version: int = 1,
+    holdout: tuple[np.ndarray, np.ndarray] | None = None,
+) -> str:
+    """Persist the model artifact (and its holdout signal) and return its path.
+
+    Version 1 keeps the original file name so existing artifacts stay valid.
+    The holdout predicted probabilities and labels are saved next to the model
+    (``.holdout.npz``): they are the no-drift reference segment for ADWIN.
+    """
     directory = Path(settings.artifact_dir)
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / f"banking_model_ds{dataset_id}.joblib"
+    suffix = "" if version == 1 else f"_v{version}"
+    path = directory / f"banking_model_ds{dataset_id}{suffix}.joblib"
     joblib.dump(model, path)
+    if holdout is not None:
+        np.savez(_holdout_path(path), prob=holdout[0], y=holdout[1])
     return str(path)
+
+
+def _holdout_path(model_path: str | Path) -> Path:
+    return Path(str(model_path) + ".holdout.npz")
+
+
+def load_holdout(model_path: str) -> tuple[np.ndarray, np.ndarray] | None:
+    """Holdout (probabilities, labels) saved with a model, if present."""
+    path = _holdout_path(model_path)
+    if not path.exists():
+        return None
+    data = np.load(path)
+    return data["prob"], data["y"]
 
 
 def load_model(path: str) -> Pipeline:

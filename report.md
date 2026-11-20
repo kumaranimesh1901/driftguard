@@ -413,7 +413,7 @@ erDiagram
 | features → drift_summaries | 1 : N | A feature is measured in many analyses. |
 | monitoring_jobs ↔ features | **M : N** (resolved by `drift_summaries`) | `drift_summaries` is the associative entity. |
 | monitoring_jobs → alerts | 1 : N | An analysis may raise an alert. |
-| alerts → retraining_events | 1 : N (optional) | Reserved for a future retraining workflow. |
+| alerts → retraining_events | 1 : N (optional) | Optional link from an alert to the retraining it triggered (champion–challenger workflow). |
 
 ### 11.4 Relational schema (from `db/init.sql`)
 
@@ -1051,14 +1051,13 @@ Data is kept in Docker volumes (`pg_data`, `mongo_data`) and `artifacts/`, so re
 - FI and S come from a single XGBoost model; SHAP shows attribution, not causation.
 - All bundled data is **synthetic** and only illustrates behaviour.
 - Batches and baselines cannot be deleted from the dashboard; the most recently registered baseline is the active reference.
-- Tables `retraining_events`, `thresholds`, `threshold_history` are designed but not yet used by the application.
+- `retraining_events` is used by the champion–challenger workflow (added Nov 2026); `thresholds` and `threshold_history` are designed but not yet used (thresholds come from `.env`).
 
 ---
 
 ## 26. Future Enhancements
 
 - Multivariate drift detection (classifier-based or MMD tests).
-- Champion–challenger retraining workflow with approval and rollback (using `retraining_events`).
 - Editing thresholds from the dashboard with history (using `thresholds` / `threshold_history`).
 - Scheduled monitoring of new batches from a data source.
 - Calibration of DIS thresholds on historical incidents.

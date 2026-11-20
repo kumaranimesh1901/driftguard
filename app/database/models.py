@@ -1,6 +1,6 @@
 """ORM mirror of the prescribed relational schema."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import (
     Boolean,
@@ -16,6 +16,11 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.postgres import Base
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now (the TIMESTAMP columns are timezone-naive)."""
+    return datetime.now(UTC).replace(tzinfo=None)
 
 JSON = JSONB
 
@@ -37,7 +42,7 @@ class Dataset(Base):
     name: Mapped[str] = mapped_column(String(150))
     source: Mapped[str | None] = mapped_column(String(200))
     row_count: Mapped[int | None] = mapped_column(Integer)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 
 class Feature(Base):
@@ -61,7 +66,7 @@ class Model(Base):
     version: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(20))
     metrics: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    trained_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    trained_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 
 class MonitoringJob(Base):
@@ -98,7 +103,7 @@ class Alert(Base):
     alert_type: Mapped[str] = mapped_column(String(30))
     level: Mapped[str] = mapped_column(String(10))
     recommendation: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 
 class RetrainingEvent(Base):
@@ -109,4 +114,4 @@ class RetrainingEvent(Base):
     new_model_id: Mapped[int] = mapped_column(ForeignKey("models.model_id"))
     decision: Mapped[str] = mapped_column(String(20))
     rollback_flag: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)

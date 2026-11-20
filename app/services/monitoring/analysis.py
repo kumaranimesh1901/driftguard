@@ -17,6 +17,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from scipy.stats import ks_2samp
 
 from app.core.config import settings
 from app.services.datasets import (
@@ -25,6 +26,7 @@ from app.services.datasets import (
     MONITORED_FEATURES,
     NUMERICAL_FEATURES,
 )
+from app.services.drift.adwin import adwin_stream
 from app.services.drift.calibration import noise_floors
 from app.services.drift.jsd import jsd_from_counts
 from app.services.drift.ks import ks
@@ -166,6 +168,7 @@ def compute_feature_drift(
             "jsd": None,
             "floors": None,
             "normalised": None,
+            "detector_agreement": None,
             "d": 0.0,
             "severity": "low",
             "drift_status": "Insufficient data",
@@ -195,6 +198,20 @@ def compute_feature_drift(
         normalised["ks"] = normalise(ks_stat, floors["ks"], settings.norm_cap_ks)
     d = aggregate_d(list(normalised.values()))
     severity = severity_of(d)
+    exceeding = sorted(k for k, v in normalised.items() if v > 0)
+    agreement = {
+        "exceeding_noise_floor": exceeding,
+        "n_exceeding": len(exceeding),
+        "n_detectors": len(normalised),
+        # "disagree": at least one detector is above its noise floor and at least
+        # one is not, so D (max) is driven by a subset of detectors only.
+        "status": (
+            "agree-drift"
+            if len(exceeding) == len(normalised)
+            else "agree-stable" if not exceeding else "disagree"
+        ),
+        "ks_significant": None if ks_p is None else bool(ks_p < settings.conventional_ks_p),
+    }
     conventional = bool(
         val_psi > settings.conventional_psi
         or (ks_p is not None and ks_p < settings.conventional_ks_p)
@@ -212,6 +229,7 @@ def compute_feature_drift(
         "jsd": float(val_jsd),
         "floors": floors,
         "normalised": normalised,
+        "detector_agreement": agreement,
         "d": float(d),
         "severity": severity,
         "drift_status": DRIFT_STATUS[severity],
@@ -219,10 +237,105 @@ def compute_feature_drift(
     }
 
 
+def reference_signal(
+    model: Any, model_metrics: dict[str, Any], ref_df: pd.DataFrame
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Holdout (probabilities, labels) of the champion: the no-drift reference.
+
+    Uses the arrays saved with the model; for legacy artifacts without them,
+    re-creates the identical deterministic baseline split.
+    """
+    if "_holdout" in model_metrics:
+        return model_metrics["_holdout"]
+    path = model_metrics.get("artifact_path")
+    saved = credit_model.load_holdout(path) if path else None
+    if saved is not None:
+        return saved
+    try:
+        _, x_te, _, y_te = credit_model.split_labelled(ref_df)
+    except credit_model.ModelUnavailableError:
+        return None
+    return model.predict_proba(x_te)[:, 1], y_te
+
+
+def stream_monitoring(
+    ref_signal: tuple[np.ndarray, np.ndarray] | None,
+    prob: np.ndarray,
+    y: np.ndarray | None,
+    prob_labelled: np.ndarray | None,
+) -> dict[str, Any]:
+    """Prediction-drift and error-stream monitoring (ADWIN + KS on outputs)."""
+    if ref_signal is None:
+        return {"prediction": None, "error": None, "prediction_ks": None}
+    ref_prob, ref_y = ref_signal
+    test = ks_2samp(ref_prob, prob)
+    out: dict[str, Any] = {
+        "prediction": adwin_stream(ref_prob, prob, "prediction"),
+        "prediction_ks": {
+            "statistic": float(test.statistic),
+            "p_value": float(test.pvalue),
+            "reference_mean": float(np.mean(ref_prob)),
+            "production_mean": float(np.mean(prob)),
+        },
+        "error": None,
+    }
+    if y is not None and prob_labelled is not None:
+        out["error"] = adwin_stream(
+            np.abs(ref_y - ref_prob), np.abs(y - prob_labelled), "error"
+        )
+    return out
+
+
+def classify_drift_types(
+    feature_results: list[dict[str, Any]],
+    drift_level: str,
+    health: dict[str, Any],
+) -> dict[str, Any]:
+    """Keep data drift, prediction drift, concept drift and degradation distinct."""
+    streams = health.get("streams") or {}
+    pred = streams.get("prediction") or {}
+    pks = streams.get("prediction_ks") or {}
+    err = streams.get("error") or {}
+    perf = health.get("performance_state", "unknown")
+    labels = bool(health.get("has_production_labels"))
+    data_drift = any(f["severity"] != "low" for f in feature_results)
+    prediction_drift = bool(
+        pred.get("detected")
+        or (pks and pks["p_value"] < settings.conventional_ks_p)
+    )
+    confirmed = perf in {"degraded", "severe"}
+    concept_suspected = (
+        None
+        if not labels
+        else bool((confirmed or err.get("detected")) and drift_level == "low")
+    )
+    notes = []
+    if not labels:
+        notes.append(
+            "No production labels: performance degradation and concept drift "
+            "cannot be confirmed; only data/prediction drift are observable."
+        )
+    if concept_suspected:
+        notes.append(
+            "Error level changed while input drift impact is low: possible "
+            "concept drift (P(y|x) changed) or a label/pipeline issue."
+        )
+    return {
+        "data_drift": data_drift,
+        "prediction_drift": prediction_drift,
+        "error_stream_change": err.get("detected") if err else None,
+        "concept_drift_suspected": concept_suspected,
+        "confirmed_degradation": confirmed if labels else None,
+        "labels_available": labels,
+        "notes": notes,
+    }
+
+
 def evaluate_model_health(
     model: Any | None,
     model_metrics: dict[str, Any] | None,
     prod_df: pd.DataFrame,
+    ref_df: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     """Score the batch and, when labels exist, compare with baseline metrics."""
     if model is None or not model_metrics:
@@ -239,6 +352,9 @@ def evaluate_model_health(
         }
     prob = credit_model.predict_proba(model, prod_df)
     threshold = model_metrics["threshold"]
+    ref_sig = (
+        reference_signal(model, model_metrics, ref_df) if ref_df is not None else None
+    )
     health: dict[str, Any] = {
         "has_model": True,
         "baseline_metrics": {
@@ -271,6 +387,7 @@ def evaluate_model_health(
     n_labels = int(mask.sum())
     health["n_labels"] = n_labels
     if n_labels < settings.min_labels:
+        health["streams"] = stream_monitoring(ref_sig, prob, None, None)
         health.update(
             {
                 "has_production_labels": False,
@@ -286,6 +403,7 @@ def evaluate_model_health(
         )
         return health
     y = labels[mask].astype(int).to_numpy()
+    health["streams"] = stream_monitoring(ref_sig, prob, y, prob[mask])
     metrics = credit_model.classification_metrics(y, prob[mask], threshold)
     perf = credit_model.performance_state(
         y, prob[mask], model_metrics.get("baseline_auc")
@@ -384,9 +502,10 @@ def analyze_banking_drift(
     drift_level = batch_drift_level(overall_dis)
 
     t2 = time.perf_counter()
-    health = evaluate_model_health(model, model_metrics, prod_df)
+    health = evaluate_model_health(model, model_metrics, prod_df, ref_df)
     timings["model_health_ms"] = (time.perf_counter() - t2) * 1000
     perf = health["performance_state"]
+    drift_types = classify_drift_types(feature_results, drift_level, health)
     assessment = risk_assessment(
         drift_level, perf, feature_results, health.get("production_metrics")
     )
@@ -422,6 +541,7 @@ def analyze_banking_drift(
         "feature_details": feature_results,
         "distributions": distributions,
         "model_health": health,
+        "drift_types": drift_types,
         "default_rates": {
             "baseline_actual": _rate(ref_df),
             "production_actual": (

@@ -16,6 +16,7 @@ from sections import (
     drift_analysis,
     drift_impact,
     model_health,
+    model_versions,
     overview,
     recommendations,
     reports,
@@ -37,6 +38,7 @@ SECTIONS = {
     "Batch Monitoring": batch_monitoring.render,
     "Risk Recommendations": recommendations.render,
     "Model Health": model_health.render,
+    "Model Versions & Retraining": model_versions.render,
     "Reports": reports.render,
 }
 
@@ -48,6 +50,7 @@ SECTION_ICONS = {
     "Batch Monitoring": "📦",
     "Risk Recommendations": "🛡️",
     "Model Health": "🩺",
+    "Model Versions & Retraining": "🔁",
     "Reports": "📄",
 }
 

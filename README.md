@@ -274,10 +274,19 @@ Stored data (Docker volumes `pg_data`, `mongo_data` and the trained model in `ar
 - The bundled sample data and demo scenarios are synthetic and illustrate behaviour only.
 - Batches and baselines cannot be deleted from the dashboard; the most recently registered baseline is the active reference.
 
+- In the DIS experiment (`docs/experiments/`), the sensitivity factor S added no measurable value over D × FI; S is kept for comparison but is largely redundant with FI.
+
+## 16a. Added during the code audit (Nov 2026)
+
+- **ADWIN** (River) on the predicted-probability stream (prediction drift) and the |y − p| error stream (labelled batches); results in each report and in MongoDB `stream_events`.
+- **Drift types kept separate** in every report: data drift, prediction drift, suspected concept drift, confirmed degradation (`null` = unknown without labels).
+- **Champion–challenger retraining** (administrator only): `POST /api/v1/banking/models/retrain`, `GET /models`, `GET /models/retraining`, `POST /models/retraining/{id}/deploy | reject | rollback`. Labelled data only; independent post-drift test split; deploy refused unless the AUC gain meets `RETRAIN_MIN_GAIN_AUC` with a 95% CI above zero and no baseline regression. Dashboard page: *Model Versions & Retraining*.
+- **Research experiment**: `PYTHONPATH=. python scripts/experiments/dis_prioritisation.py` (about 5 minutes) writes `docs/experiments/dis_prioritisation_results.{md,json}`.
+
 ## 17. Future Enhancements
 
 - Multivariate drift detection (e.g. classifier-based or MMD tests).
-- Champion–challenger retraining workflow with approval and rollback.
+- Shift-aware sensitivity (model response to the observed shift) to replace the permutation S, which duplicates FI.
 - Scheduled monitoring of new batches arriving from a data source.
 - Calibration of DIS thresholds on historical incidents.
 - Email or chat alerts for HIGH and CRITICAL batches.

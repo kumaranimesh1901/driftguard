@@ -6,6 +6,8 @@ Collections:
     production_batches   batch metadata and processing history
     root_cause_reports   full analysis report per monitoring job
     drift_events         per-feature detector values per job
+    stream_events        ADWIN prediction / error stream results per job
+    model_evaluations    champion-vs-challenger evaluation records (retraining)
     monitoring_logs      audit trail
 """
 
@@ -34,4 +36,6 @@ def ensure_indexes() -> None:
         [("batch_id", ASCENDING), ("analysed_at", DESCENDING)]
     )
     db.drift_events.create_index([("job_id", ASCENDING), ("feature", ASCENDING)])
+    db.stream_events.create_index([("job_id", ASCENDING), ("stream", ASCENDING)])
+    db.model_evaluations.create_index("event_id", unique=True)
     db.monitoring_logs.create_index([("timestamp", DESCENDING)])

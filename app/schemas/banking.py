@@ -63,3 +63,15 @@ class GenerateBaselineRequest(APIModel):
 class SeedDemoRequest(APIModel):
     include_concept_shift_batch: bool = True
     force: bool = False
+
+
+class RetrainRequest(APIModel):
+    batch_ids: list[str] = Field(min_length=1, max_length=50)
+    alert_id: int | None = Field(default=None, ge=1)
+
+    @field_validator("batch_ids")
+    @classmethod
+    def valid_ids(cls, v: list[str]) -> list[str]:
+        if len(set(v)) != len(v):
+            raise ValueError("batch_ids must be unique")
+        return [_check_batch_id(x) for x in v]

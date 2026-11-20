@@ -33,6 +33,7 @@ from app.schemas.banking import (
     AnalysisRequest,
     GenerateBaselineRequest,
     GenerateBatchRequest,
+    RetrainRequest,
     RunAllRequest,
     SeedDemoRequest,
 )
@@ -44,7 +45,7 @@ from app.services.datasets import (
     prepare_banking_frame,
 )
 from app.services.drift.calibration import noise_floors
-from app.services.monitoring import store
+from app.services.monitoring import retraining, store
 from app.services.monitoring.analysis import (
     analyze_banking_drift,
     categorical_distribution,
@@ -442,11 +443,14 @@ def _run(
         if not meta:
             raise _error(404, f"Batch '{b}' not found.", "not_found")
         metas.append(meta)
+    champion_id = store.champion_model_id(session, base_meta)
     signature = hashlib.sha256(
         "|".join(
             [
                 mode,
                 base_meta["content_sha256"],
+                f"model:{champion_id}",
+                store.settings_fingerprint(),
                 *sorted(m["content_sha256"] for m in metas),
             ]
         ).encode()
@@ -476,8 +480,8 @@ def _run(
         job_batch_id = batch_ids[0]
         name = batch_ids[0]
     dates = [m["batch_date"] for m in metas]
-    model, metrics = store.load_champion(session, base_meta["model_id"])
-    job = store.start_job(session, user, base_meta["model_id"], job_batch_id, dates)
+    model, metrics = store.load_champion(session, champion_id)
+    job = store.start_job(session, user, champion_id, job_batch_id, dates)
     try:
         report = analyze_banking_drift(
             ref_df,
@@ -514,10 +518,15 @@ def _run(
                 "baseline_dataset_id": base_meta["dataset_id"],
                 "baseline_name": base_meta["name"],
                 "baseline_is_synthetic": base_meta.get("is_synthetic", False),
-                "model_id": base_meta["model_id"],
+                "model_id": champion_id,
                 "is_synthetic": any(m.get("is_synthetic") for m in metas)
                 or base_meta.get("is_synthetic", False),
                 "input_signature": signature,
+                "leakage_warning": (
+                    sorted(set(batch_ids) & set(metrics.get("training_batches", [])))
+                    if metrics
+                    else []
+                ),
                 "analysed_at": store.now(),
                 "analysed_by": user.email,
                 "reused": False,
@@ -794,7 +803,10 @@ def overview(
                 for k, v in frames.items()
             }
         )
-        model_row = store.load_champion(session, meta["model_id"])[1] or {}
+        model_row = (
+            store.load_champion(session, store.champion_model_id(session, meta))[1]
+            or {}
+        )
         lab = ref_df["loan_default"].dropna()
         default_rates.append(
             {
@@ -1161,3 +1173,70 @@ def seed_demo(
         "combined": store._summary(combined),
         "synthetic": True,
     }
+
+
+# ---------------------------------------------------------------------------
+# Model versions and controlled retraining (champion-challenger)
+# ---------------------------------------------------------------------------
+
+
+def _retraining_call(fn, *args) -> dict[str, Any]:
+    try:
+        return fn(*args)
+    except LookupError as exc:
+        raise _error(404, str(exc), "not_found") from exc
+    except retraining.RetrainingError as exc:
+        raise _error(409, str(exc), "retraining_refused") from exc
+
+
+@router.get("/models")
+def list_models(
+    session: Session = Depends(get_db), _: User = Depends(READ)
+) -> list[dict[str, Any]]:
+    """All model versions of the active baseline with status and test metrics."""
+    return retraining.list_models(session)
+
+
+@router.get("/models/retraining")
+def list_retraining_events(
+    session: Session = Depends(get_db), _: User = Depends(READ)
+) -> list[dict[str, Any]]:
+    """Retraining events with their champion-vs-challenger evaluation."""
+    return retraining.list_events(session)
+
+
+@router.post("/models/retrain", status_code=201)
+def retrain(
+    body: RetrainRequest,
+    session: Session = Depends(get_db),
+    user: User = Depends(ADMIN),
+) -> dict[str, Any]:
+    """Train and evaluate a challenger from labelled batches; nothing is deployed."""
+    _baseline_or_409()
+    return _retraining_call(
+        retraining.create_challenger, session, user, body.batch_ids, body.alert_id
+    )
+
+
+@router.post("/models/retraining/{event_id}/deploy")
+def deploy_challenger(
+    event_id: int, session: Session = Depends(get_db), user: User = Depends(ADMIN)
+) -> dict[str, Any]:
+    """Administrator approval: promote a challenger that met the criteria."""
+    return _retraining_call(retraining.deploy, session, user, event_id)
+
+
+@router.post("/models/retraining/{event_id}/reject")
+def reject_challenger(
+    event_id: int, session: Session = Depends(get_db), user: User = Depends(ADMIN)
+) -> dict[str, Any]:
+    """Reject a pending challenger."""
+    return _retraining_call(retraining.reject, session, user, event_id)
+
+
+@router.post("/models/retraining/{event_id}/rollback")
+def rollback_model(
+    event_id: int, session: Session = Depends(get_db), user: User = Depends(ADMIN)
+) -> dict[str, Any]:
+    """Restore the previous champion after a deployment."""
+    return _retraining_call(retraining.rollback, session, user, event_id)

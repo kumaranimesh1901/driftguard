@@ -30,14 +30,16 @@ def batch_size_bucket(n: int) -> int:
 def _draw_pair(
     ref: np.ndarray, n: int, rng: np.random.Generator
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Draw two reference-like samples, disjoint halves when the sample allows."""
-    if 2 * n <= ref.size:
-        idx = rng.permutation(ref.size)
-        return ref[idx[:n]], ref[idx[n : 2 * n]]
-    half = ref.size // 2
-    idx = rng.permutation(ref.size)
-    a, b = ref[idx[:half]], ref[idx[half:]]
-    return rng.choice(a, n, replace=True), rng.choice(b, n, replace=True)
+    """Draw a (reference-sized, batch-sized) pair under the no-drift hypothesis.
+
+    The real comparison is the full reference (``N`` rows) against one batch
+    (``n`` rows), so the null must reproduce that design: both samples are drawn
+    with replacement from the reference empirical distribution, the first of
+    size ``N`` and the second of size ``n``. (Drawing two batch-sized samples
+    inflates the sampling variance roughly by ``2/n`` vs ``1/n + 1/N`` and made
+    the floors over-conservative: ~0% instead of the nominal 5% false alarms.)
+    """
+    return rng.choice(ref, ref.size, replace=True), rng.choice(ref, n, replace=True)
 
 
 def numerical_noise_floors(
@@ -47,7 +49,11 @@ def numerical_noise_floors(
     quantile: float = settings.null_quantile,
     seed: int = settings.random_seed,
 ) -> dict[str, float]:
-    """Return the no-drift ``quantile`` of PSI, KS and JSD for batch size ``n_batch``."""
+    """Return the no-drift ``quantile`` of PSI, KS and JSD for batch size ``n_batch``.
+
+    ``x`` plays the reference role (bins come from its quantiles, as in
+    :func:`app.services.drift.psi.binned_proportions`) and ``y`` the batch.
+    """
     ref = np.asarray(reference, dtype=float)
     ref = ref[np.isfinite(ref)]
     rng = np.random.default_rng(seed)
@@ -55,7 +61,7 @@ def numerical_noise_floors(
     psis, kss, jsds = [], [], []
     for _ in range(b):
         x, y = _draw_pair(ref, n, rng)
-        p, q, _ = binned_proportions(x, y)
+        p, q, _ = binned_proportions(x, y)  # p: batch y, q: reference x
         pc, qc = np.clip(p, 1e-4, None), np.clip(q, 1e-4, None)
         psis.append(float(np.sum((pc - qc) * np.log(pc / qc))))
         kss.append(float(ks_2samp(x, y).statistic))
