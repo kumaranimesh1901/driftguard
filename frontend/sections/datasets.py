@@ -35,7 +35,11 @@ def render() -> None:
         "Upload the 2020 historical baseline and 2026 production customer batches, then choose batches to analyse",
     )
     baseline_tab, batches_tab, analyse_tab = st.tabs(
-        ["1 · Historical baseline", "2 · Production batches", "3 · Select & analyse"]
+        [
+            "📁 1 · Historical Baseline",
+            "📦 2 · Production Batches",
+            "⚡ 3 · Select & Run Analysis",
+        ]
     )
     with baseline_tab:
         _baseline_tab()
@@ -44,7 +48,7 @@ def render() -> None:
     with analyse_tab:
         _analyse_tab()
     if can_write():
-        with st.expander("Demo data (synthetic) — generate example batches"):
+        with st.expander("✨ Generate Synthetic Demo Data & Scenarios (Optional)", expanded=False):
             _demo_data()
 
 

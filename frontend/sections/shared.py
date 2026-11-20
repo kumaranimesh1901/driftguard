@@ -42,17 +42,27 @@ def analysis_choices(include_combined: bool = True) -> list[dict[str, Any]]:
     """Latest individual analysis per batch, then combined runs (newest first)."""
     hist = safe(lambda: api.get("/analysis/history"), {}) or {}
     latest = hist.get("latest_per_batch", [])
-    out = [
-        dict(r, _label=f"{r['batch_id']} · {r['batch_date']} · job #{r['job_id']}")
-        for r in latest
-    ]
+
+    def _format_label(r: dict[str, Any]) -> str:
+        risk = r.get("risk_category") or "LOW RISK"
+        risk_dot = {
+            "LOW RISK": "🟢",
+            "MEDIUM RISK": "🟡",
+            "HIGH RISK": "🟠",
+            "CRITICAL RISK": "🔴",
+        }.get(risk, "⚪")
+        dis = r.get("overall_dis")
+        dis_str = f"DIS {dis:.2f}" if dis is not None else "DIS —"
+        return f"{risk_dot} {r['batch_id']}  ·  {risk}  ·  {dis_str}  ·  Job #{r['job_id']}"
+
+    out = [dict(r, _label=_format_label(r)) for r in latest]
     if include_combined:
         combined = [r for r in hist.get("runs", []) if r["analysis_type"] == "combined"]
         combined.sort(key=lambda r: r["job_id"], reverse=True)
         out += [
             dict(
                 r,
-                _label=f"Combined ({len(r['batch_ids'])} batches: {', '.join(r['batch_ids'])}) · job #{r['job_id']}",
+                _label=f"🔷 Combined ({len(r['batch_ids'])} batches: {', '.join(r['batch_ids'])}) · Job #{r['job_id']}",
             )
             for r in combined
         ]
@@ -60,14 +70,14 @@ def analysis_choices(include_combined: bool = True) -> list[dict[str, Any]]:
 
 
 def select_analysis(
-    key: str, include_combined: bool = True, label: str = "Analysis"
+    key: str, include_combined: bool = True, label: str = "Select Production Batch Analysis"
 ) -> dict[str, Any] | None:
     """Selectbox over analyses; remembers the last choice across pages."""
     choices = analysis_choices(include_combined)
     if not choices:
         st.info(
             "No analyses yet. Upload production batches and run an analysis in **Dataset Management → Select & analyse**, "
-            "or seed the synthetic demo from the sidebar."
+            "or seed the synthetic demo from Dataset Management."
         )
         return None
     labels = [c["_label"] for c in choices]
@@ -98,7 +108,7 @@ def feature_table(report: dict[str, Any]) -> pd.DataFrame:
                 "D (normalised)": f["d"],
                 "DIS": f.get("dis"),
                 "Drift Status": f["drift_status"],
-                "Conventional alert": "Yes" if f["conventional_alert"] else "No",
+                "Alert Triggered": "⚠️ Yes" if f["conventional_alert"] else "✓ No",
             }
         )
     return pd.DataFrame(rows)
@@ -106,45 +116,50 @@ def feature_table(report: dict[str, Any]) -> pd.DataFrame:
 
 def _summary_row(report: dict[str, Any]) -> None:
     synthetic_notice(report.get("is_synthetic"))
+    risk_cat = report.get("risk_category", "LOW RISK")
+    accent_color = RISK.get(risk_cat, ("#1E40AF", "#EFF6FF"))[0]
+
     c = st.columns(5)
     kpi(
         c[0],
-        "Customers compared",
+        "Customers Compared",
         f"{report['customer_count']:,}",
         f"vs {report['baseline_count']:,} baseline",
     )
     kpi(
         c[1],
-        "Drifting features",
+        "Drifting Attributes",
         f"{report['drifting_features_count']} / {report['features_monitored']}",
         f"{report['significant_drift_count']} significant",
+        accent=accent_color if report["drifting_features_count"] else None,
     )
     kpi(
         c[2],
         "Overall DIS",
         fmt(report["overall_dis"]),
-        f"drift level: {report['drift_level']}",
-        accent=RISK[report["risk_category"]][0],
+        f"drift: {report['drift_level'].upper()}",
+        accent=accent_color,
     )
     kpi(
         c[3],
-        "Risk category",
-        report["risk_category"].replace(" RISK", ""),
-        report["alert_type"] or "no alert",
-        accent=RISK[report["risk_category"]][0],
+        "Risk Category",
+        risk_cat.replace(" RISK", ""),
+        report["alert_type"] or "standard baseline",
+        accent=accent_color,
     )
     kpi(
         c[4],
-        "Performance",
+        "Model Performance",
         report["performance_state"].title(),
         (
             "labels confirmed"
             if report["model_health"].get("has_production_labels")
             else "labels pending"
         ),
+        accent=accent_color if report["performance_state"] != "stable" else "#15803D",
     )
     st.caption(
-        f"Job #{report['job_id']} · {report['analysis_type']} analysis · analysed {report['analysed_at']} by "
+        f"📋 Analysis Job #{report['job_id']} · {report['analysis_type'].title()} · run on {report['analysed_at']} by "
         f"{report['analysed_by']}"
-        + (" · reused stored result" if report.get("reused") else "")
+        + (" (cached result)" if report.get("reused") else "")
     )
