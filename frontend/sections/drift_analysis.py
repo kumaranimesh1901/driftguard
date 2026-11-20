@@ -1,113 +1,154 @@
-"""C. Customer Drift Analysis: PSI, KS, JSD and distributions per financial attribute."""
+"""C. Customer Drift Analysis: summary, drift types, progress-bar feature table, detail inspector."""
 
 from typing import Any
 
 import api_client as api
 import pandas as pd
 import streamlit as st
+import theme
 from components import (
     chart,
     distribution_figure,
+    empty_state,
     fmt,
-    header,
+    info_callout,
+    page_header,
     safe,
-    status_cell,
+    section,
+    status_pill,
     table,
 )
 
-from sections.shared import _summary_row, can_write, feature_table
-
-KEY_FEATURES = [
-    ("monthly_income", "Monthly Income"),
-    ("credit_score", "Credit Score"),
-    ("credit_limit", "Credit Limit"),
-    ("fd_balance", "FD Balance"),
-    ("outstanding_loan_amount", "Outstanding Loans"),
-    ("debt_to_income", "Debt-to-Income Ratio"),
-]
+from sections.shared import _summary_row, can_write
 
 
 def render() -> None:
-    header(
+    selected_meta = page_header(
         "Customer Distribution Drift Analysis",
-        "Statistical tests (PSI, Kolmogorov-Smirnov, Jensen-Shannon Divergence) across applicant attributes",
+        "Statistical tests (PSI, KS, JSD) vs bootstrap noise floors and ADWIN stream monitoring",
+        show_batch_selector=True,
     )
-    batches = safe(lambda: api.get("/batches"), []) or []
-    if not batches:
-        st.info("Upload production batches in Dataset Management first.")
-        return
-    ids = [b["batch_id"] for b in batches]
-    by_id = {b["batch_id"]: b for b in batches}
-    default = st.session_state.get("drift_batch", ids[-1])
-
-    def format_batch(batch_id: str) -> str:
-        b = by_id.get(batch_id, {})
-        drift_lvl = b.get("drift_level")
-        dot = (
-            "🔴"
-            if drift_lvl == "high"
-            else ("🟡" if drift_lvl == "moderate" else ("🟢" if drift_lvl == "low" else "⚪"))
+    if not selected_meta:
+        empty_state(
+            "NO BATCHES",
+            "No production batches available",
+            "Upload or generate production batches in Dataset Management first.",
         )
-        count = b.get("row_count", 0)
-        status_txt = f"{drift_lvl.upper()} DRIFT" if drift_lvl else "PENDING ANALYSIS"
-        return f"{dot} {batch_id}  ·  {count:,} customers  ·  {status_txt}"
+        return
+    bid = selected_meta["batch_id"]
 
-    bid = st.selectbox(
-        "Select Production Batch to Inspect",
-        ids,
-        index=ids.index(default) if default in ids else len(ids) - 1,
-        format_func=format_batch,
-        key="drift_batch_sel",
-    )
-    st.session_state["drift_batch"] = bid
-
-    if by_id[bid].get("latest_job_id") is None:
-        st.info(f"Batch **{bid}** has not been analysed yet.")
-        if st.button("Run Drift Analysis", type="primary", disabled=not can_write()):
-            with st.spinner("Computing PSI, KS, JSD and DIS in backend…"):
-                safe(lambda: api.post("/analysis/run", json={"batch_ids": [bid]}))
-            st.rerun()
+    if selected_meta.get("latest_job_id") is None:
+        empty_state(
+            "PENDING ANALYSIS",
+            f"Batch {bid} has not been analysed yet",
+            "Run drift analysis to compute PSI, KS, JSD, DIS and ADWIN stream telemetry.",
+            action_label="Run Drift Analysis" if can_write() else None,
+            action_fn=(
+                lambda: (
+                    safe(lambda: api.post("/analysis/run", json={"batch_ids": [bid]})),
+                    st.rerun(),
+                )
+            )
+            if can_write()
+            else None,
+            key=f"run_da_{bid}",
+        )
         return
 
-    report = safe(lambda: api.get(f"/analysis/latest/{bid}"))
+    with st.spinner(f"Loading drift analysis for {bid}…"):
+        report = safe(lambda: api.get(f"/analysis/latest/{bid}"), retry_key=f"da_{bid}")
     if not report:
         return
 
+    # 1. Summary strip
     _summary_row(report)
-    _drift_types(report)
 
-    tab_key, tab_table, tab_inspect = st.tabs(
-        [
-            "📊 Core Banking Attributes",
-            "📋 Comprehensive Feature Metrics",
-            "🔬 Attribute Deep-Dive Inspector",
-        ]
+    # 2. Drift-types panel
+    _drift_types_panel(report)
+
+    # 3. Feature table with ProgressColumn for D, FI, S, DIS + agreement + severity
+    section(
+        "Feature-Level Drift Diagnostics",
+        "Progress bars scale 0 → 1; hover column headers for metric definitions.",
+    )
+    rows = []
+    for f in sorted(report["feature_details"], key=lambda x: x.get("dis") or 0.0, reverse=True):
+        ag = f.get("detector_agreement") or {}
+        sev = (f.get("severity") or "low").lower()
+        sev_label = {"low": "Low", "moderate": "Moderate", "high": "High"}.get(sev, sev.title())
+        rows.append(
+            {
+                "Feature": f["label"],
+                "D": f.get("d") or 0.0,
+                "FI": f.get("fi") or 0.0,
+                "S": f.get("s") or 0.0,
+                "DIS": f.get("dis") or 0.0,
+                "PSI": f.get("psi"),
+                "KS": f.get("ks_stat"),
+                "KS p-value": fmt(f.get("ks_p"), ".2e", "—"),
+                "JSD": f.get("jsd"),
+                "Severity": sev_label,
+                "Agreement": ag.get("status") or "—",
+            }
+        )
+    df = pd.DataFrame(rows)
+    st.dataframe(
+        df,
+        hide_index=True,
+        width="stretch",
+        height=460,
+        column_config={
+            "D": st.column_config.ProgressColumn(
+                "D", min_value=0.0, max_value=1.0, format="%.3f", help=theme.HELP_TEXTS["d"]
+            ),
+            "FI": st.column_config.ProgressColumn(
+                "FI", min_value=0.0, max_value=1.0, format="%.3f", help=theme.HELP_TEXTS["fi"]
+            ),
+            "S": st.column_config.ProgressColumn(
+                "S", min_value=0.0, max_value=1.0, format="%.3f", help=theme.HELP_TEXTS["s"]
+            ),
+            "DIS": st.column_config.ProgressColumn(
+                "DIS", min_value=0.0, max_value=1.0, format="%.3f", help=theme.HELP_TEXTS["dis"]
+            ),
+            "PSI": st.column_config.NumberColumn("PSI", format="%.4f", help=theme.HELP_TEXTS["psi"]),
+            "KS": st.column_config.NumberColumn("KS", format="%.4f", help=theme.HELP_TEXTS["ks"]),
+            "KS p-value": st.column_config.TextColumn("KS p-value", help=theme.HELP_TEXTS["ks"]),
+            "JSD": st.column_config.NumberColumn("JSD", format="%.4f", help=theme.HELP_TEXTS["jsd"]),
+            "Severity": st.column_config.TextColumn("Severity"),
+            "Agreement": st.column_config.TextColumn(
+                "Detector Agreement",
+                help="agree-drift: all detectors exceed noise floor; disagree: subset only; agree-stable: none.",
+            ),
+        },
     )
 
-    with tab_key:
-        _key_feature_grid(report)
-
-    with tab_table:
-        _feature_results(report)
-
-    with tab_inspect:
-        _feature_inspector(report)
+    # 4. Feature Detail Panel
+    _feature_detail_panel(report)
 
 
-def _drift_types(report: dict[str, Any]) -> None:
-    """Data drift / prediction drift / concept drift / degradation, kept separate."""
+def _drift_types_panel(report: dict[str, Any]) -> None:
     t = report.get("drift_types")
     if not t:
         return
 
-    def show(v: Any) -> str:
-        return "Unknown (no labels)" if v is None else ("Yes" if v else "No")
+    def _pill(v: Any) -> str:
+        if v is None:
+            return status_pill("Unknown – labels pending", "unknown", dot=False)
+        return status_pill("Yes", "critical", dot=False) if v else status_pill("No", "low", dot=False)
 
-    cols = st.columns(4)
-    cols[0].metric("Data drift", show(t["data_drift"]))
-    cols[1].metric("Prediction drift (ADWIN / KS)", show(t["prediction_drift"]))
-    cols[2].metric("Concept drift suspected", show(t["concept_drift_suspected"]))
-    cols[3].metric("Confirmed degradation", show(t["confirmed_degradation"]))
+    st.markdown(
+        f"""
+        <div class="dg-card" style="padding:14px 18px;margin-top:8px;">
+            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">
+                <div><div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;color:{theme.MUTED};margin-bottom:6px;">Data drift</div>{_pill(t.get('data_drift'))}</div>
+                <div><div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;color:{theme.MUTED};margin-bottom:6px;" title="{theme.HELP_TEXTS['adwin']}">Prediction drift (ADWIN / KS) ⓘ</div>{_pill(t.get('prediction_drift'))}</div>
+                <div><div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;color:{theme.MUTED};margin-bottom:6px;">Concept drift suspected</div>{_pill(t.get('concept_drift_suspected'))}</div>
+                <div><div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;color:{theme.MUTED};margin-bottom:6px;">Confirmed degradation</div>{_pill(t.get('confirmed_degradation'))}</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     streams = (report.get("model_health") or {}).get("streams") or {}
     pred = streams.get("prediction") or {}
     if pred.get("detected"):
@@ -119,67 +160,23 @@ def _drift_types(report: dict[str, Any]) -> None:
     for n in t.get("notes", []):
         st.caption(n)
     if report.get("leakage_warning"):
-        st.warning(
-            "The current champion was trained on part of: "
+        info_callout(
+            "warning",
+            "<b>Evaluation notice:</b> The current champion was trained on part of "
             + ", ".join(report["leakage_warning"])
-            + ". Performance on these batches is optimistic."
+            + ". Performance on these batches is optimistic.",
         )
 
 
-def _key_feature_grid(report: dict[str, Any]) -> None:
-    st.markdown("##### Core Financial Attributes: 2020 Baseline vs Production Batch")
-    by_feature = {f["feature"]: f for f in report["feature_details"]}
-    names = {"baseline": "Baseline 2020", "production": report["batch_name"]}
-    for row in range(2):
-        cols = st.columns(3)
-        for col, (feature, label) in zip(
-            cols, KEY_FEATURES[row * 3 : row * 3 + 3], strict=True
-        ):
-            f = by_feature[feature]
-            psi = fmt(f["psi"], ".3f")
-            with col:
-                chart(
-                    distribution_figure(
-                        report["distributions"].get(feature),
-                        f"{label} · {f['drift_status']} (PSI {psi})",
-                        270,
-                        names=names,
-                        legend=row == 0 and col is cols[0],
-                    ),
-                    key=f"key_{feature}",
-                )
-
-
-def _feature_results(report: dict[str, Any]) -> None:
-    st.markdown("##### Feature-Level Drift Diagnostics")
-    df = feature_table(report)
-    table(
-        df,
-        {
-            "PSI": ".4f",
-            "KS Statistic": ".4f",
-            "KS p-value": ".2e",
-            "JSD": ".4f",
-            "D (normalised)": ".2f",
-            "DIS": ".3f",
-        },
-        {"Drift Status": status_cell},
-        height=460,
+def _feature_detail_panel(report: dict[str, Any]) -> None:
+    section(
+        "Feature Detail Inspector",
+        "Select any attribute to compare baseline vs production distributions and detector noise floors.",
     )
-    t = report["thresholds"]
-    st.caption(
-        f"<b>Thresholds:</b> Stable (D < {t['severity_moderate']}) · Moderate ({t['severity_moderate']} ≤ D < {t['severity_high']}) · Significant (D ≥ {t['severity_high']}). "
-        "Normalised drift D subtracts bootstrap noise floor at 95th percentile before scaling. "
-        "Conventional alerts flag PSI > 0.25, KS p < 0.01, or JSD > 0.1."
-    )
-
-
-def _feature_inspector(report: dict[str, Any]) -> None:
-    st.markdown("##### Detailed Feature Distribution & Statistics")
     feats = {f["label"]: f for f in report["feature_details"]}
-    ranked = sorted(feats, key=lambda k: feats[k].get("dis", 0), reverse=True)
+    ranked = sorted(feats, key=lambda k: feats[k].get("dis") or 0.0, reverse=True)
     label = st.selectbox(
-        "Select Feature to Examine", ranked, key=f"feat_{report['job_id']}"
+        "Inspect attribute", ranked, key=f"feat_detail_{report['job_id']}"
     )
     f = feats[label]
     left, right = st.columns([3, 2])
@@ -187,88 +184,68 @@ def _feature_inspector(report: dict[str, Any]) -> None:
         chart(
             distribution_figure(
                 report["distributions"].get(f["feature"]),
-                f"{label}: 2020 Baseline vs Production Distribution",
-                370,
-                names={"baseline": "Baseline 2020", "production": "Production"},
+                f"{label}: 2020 Baseline vs {report['batch_name']}",
+                360,
+                names={"baseline": "Baseline 2020", "production": report["batch_name"]},
             ),
             key="feat_dist",
         )
     with right:
+        sev = (f.get("severity") or "low").lower()
+        ag = (f.get("detector_agreement") or {}).get("status") or "—"
         st.markdown(
-            f"### {label} &nbsp; {_status_html(f['drift_status'])}",
+            f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">'
+            f'<span style="font-size:16px;font-weight:600;color:{theme.INK};">{label}</span>'
+            f"{status_pill(f['drift_status'], sev)}"
+            f"{status_pill(ag, 'neutral', dot=False)}"
+            f"</div>",
             unsafe_allow_html=True,
         )
         det = pd.DataFrame(
             [
                 {
                     "Detector": "PSI",
-                    "Value": f["psi"],
-                    "Noise floor": (f["floors"] or {}).get("psi"),
+                    "Observed": f["psi"],
+                    "Noise floor (q95)": (f["floors"] or {}).get("psi"),
                     "Normalised D": (f["normalised"] or {}).get("psi"),
                 },
                 {
                     "Detector": "KS statistic",
-                    "Value": f["ks_stat"],
-                    "Noise floor": (f["floors"] or {}).get("ks"),
+                    "Observed": f["ks_stat"],
+                    "Noise floor (q95)": (f["floors"] or {}).get("ks"),
                     "Normalised D": (f["normalised"] or {}).get("ks"),
                 },
                 {
                     "Detector": "JSD",
-                    "Value": f["jsd"],
-                    "Noise floor": (f["floors"] or {}).get("jsd"),
+                    "Observed": f["jsd"],
+                    "Noise floor (q95)": (f["floors"] or {}).get("jsd"),
                     "Normalised D": (f["normalised"] or {}).get("jsd"),
                 },
             ]
         )
         table(
             det,
-            {"Value": ".4f", "Noise floor": ".4f", "Normalised D": ".2f"},
+            {"Observed": ".4f", "Noise floor (q95)": ".4f", "Normalised D": ".3f"},
             missing="n/a",
         )
         if f["ks_p"] is not None:
-            st.caption(f"Kolmogorov-Smirnov p-value: `{f['ks_p']:.2e}`")
+            st.caption(f"KS p-value: `{f['ks_p']:.2e}` · {theme.HELP_TEXTS['noise_floor']}")
         if f["type"] == "numerical" and f["reference_stats"]:
             rs, ps = f["reference_stats"], f["production_stats"]
             stats = pd.DataFrame({"Baseline": rs, "Production": ps}).loc[
                 ["mean", "median", "std", "p05", "p95", "missing_rate"]
             ]
-            stats.index = [
-                "Mean",
-                "Median",
-                "Std Dev",
-                "5th Percentile",
-                "95th Percentile",
-                "Missing Rate",
-            ]
-            stats["Relative Change"] = [
-                (
-                    ((p - b) / b if (b and p is not None) else None)
-                    if k != "Missing Rate"
-                    else None
-                )
-                for k, b, p in zip(
-                    stats.index, stats["Baseline"], stats["Production"], strict=True
-                )
+            stats.index = ["Mean", "Median", "Std Dev", "5th Pct", "95th Pct", "Missing Rate"]
+            stats["Change"] = [
+                (((p - b) / b if (b and p is not None) else None) if k != "Missing Rate" else None)
+                for k, b, p in zip(stats.index, stats["Baseline"], stats["Production"], strict=True)
             ]
             table(
                 stats.reset_index(names="Metric"),
-                {"Baseline": ",.2f", "Production": ",.2f", "Relative Change": "+.1%"},
+                {"Baseline": ",.2f", "Production": ",.2f", "Change": "+.1%"},
             )
         elif f["type"] == "categorical":
             if f.get("new_categories"):
-                st.warning(
-                    "⚠️ New categories observed in production: "
-                    + ", ".join(f["new_categories"])
-                )
+                info_callout("warning", "New categories in production: " + ", ".join(f["new_categories"]))
             if f.get("missing_categories"):
-                st.info(
-                    "ℹ️ Baseline categories absent in production: "
-                    + ", ".join(f["missing_categories"])
-                )
-
-
-def _status_html(status: str) -> str:
-    from components import STATUS, badge
-
-    fg, bg = STATUS.get(status, ("#0F172A", "#FFFFFF"))
-    return badge(status, fg, bg, dot=True)
+                info_callout("info", "Baseline categories absent: " + ", ".join(f["missing_categories"]))

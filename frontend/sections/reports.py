@@ -1,35 +1,62 @@
-"""H. Reports: downloadable PDF drift monitoring report."""
+"""H. Reports: analysed job list, preview card, primary PDF download & audit trail."""
 
 import api_client as api
 import pandas as pd
 import streamlit as st
+import theme
 from components import (
+    empty_state,
     fmt,
-    header,
+    format_perf_state,
+    format_timestamp,
+    info_callout,
+    kpi_card,
+    page_header,
+    perf_badge,
+    risk_badge,
     safe,
+    section,
 )
 
 from sections.shared import select_analysis
 
 
 def render() -> None:
-    header(
+    page_header(
         "Risk Committee Compliance Reports",
-        "Generate and export comprehensive PDF packs with drift diagnostics, DIS breakdown, and audit trails",
+        "Export audit-ready PDF packs with drift diagnostics, DIS decomposition, model health and governance trail",
+        show_batch_selector=True,
     )
     choice = select_analysis("report_job")
     if not choice:
+        empty_state(
+            "NO REPORTS",
+            "No analysed jobs available",
+            "Run a drift analysis first to compile downloadable committee PDF reports.",
+        )
         return
 
-    # Batch summary metrics card
+    risk_cat = choice.get("risk_category") or "LOW RISK"
+    fg, _ = theme.risk_color(risk_cat)
+
+    # Preview Card
     st.markdown(
         f"""
-        <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:12px; padding:18px 22px; margin-bottom:18px; box-shadow:0 1px 3px rgba(15,23,42,0.04);">
-            <div style="font-size:0.75rem; font-weight:700; color:#64748B; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:4px;">
-                Target Batch: {choice['batch_id']} · Analysis Job #{choice['job_id']}
-            </div>
-            <div style="font-size:0.85rem; color:#64748B;">
-                Analysed on {choice['analysed_at']} by <b>{choice['analysed_by']}</b>
+        <div class="dg-card" style="border-left:4px solid {fg};">
+            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+                <div>
+                    <div style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;color:{theme.MUTED};">
+                        Report Preview · Job #{choice['job_id']}
+                    </div>
+                    <div style="font-size:18px;font-weight:700;color:{theme.INK};margin-top:4px;">{choice['batch_id']}</div>
+                    <div style="font-size:12px;color:{theme.MUTED};margin-top:2px;">
+                        Analysed {format_timestamp(choice.get('analysed_at'))} by <b>{choice['analysed_by']}</b>
+                    </div>
+                </div>
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                    {risk_badge(risk_cat)}
+                    {perf_badge(choice.get('performance_state'))}
+                </div>
             </div>
         </div>
         """,
@@ -37,72 +64,62 @@ def render() -> None:
     )
 
     c = st.columns(4)
-    c[0].metric("Monitored Customers", f"{choice['customer_count']:,}")
-    c[1].metric("Overall DIS Score", fmt(choice["overall_dis"]))
-    c[2].metric("Risk Category", choice["risk_category"])
-    c[3].metric("Model State", choice["performance_state"].title())
+    kpi_card(c[0], "Customers", f"{choice['customer_count']:,}", "monitored in job", tone="primary")
+    kpi_card(c[1], "Overall DIS", fmt(choice["overall_dis"]), "max feature DIS", tone="primary")
+    kpi_card(c[2], "Risk Category", risk_cat.replace(" RISK", ""), choice.get("alert_type") or "standard", tone="neutral")
+    kpi_card(
+        c[3],
+        "Model State",
+        format_perf_state(choice["performance_state"]).split(" (")[0],
+        "confirmed" if choice["performance_state"] not in ("unknown", "unconfirmed") else "labels pending",
+        tone="neutral",
+    )
 
     st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
 
-    col_btn, _ = st.columns([1, 2])
+    col_btn, col_dl, _ = st.columns([1.2, 1.4, 2])
     with col_btn:
-        if st.button("📄 Generate PDF Compliance Report", type="primary", width="stretch"):
+        if st.button("Compile PDF Report", type="primary", width="stretch", icon=":material/picture_as_pdf:"):
             with st.spinner("Compiling ReportLab PDF document…"):
-                pdf = safe(lambda: api.get_bytes(f"/reports/{choice['job_id']}/pdf"))
+                pdf = safe(lambda: api.get_bytes(f"/reports/{choice['job_id']}/pdf"), retry_key="pdf_dl")
             if pdf:
                 st.session_state["pdf"] = (choice["job_id"], pdf)
 
     stored = st.session_state.get("pdf")
     if stored and stored[0] == choice["job_id"]:
-        safe_name = "".join(
-            ch if ch.isalnum() or ch in "_-" else "_" for ch in choice["batch_id"]
-        )
-        st.markdown(
-            f"""
-            <div style="background:#ECFDF5; border:1px solid #A7F3D0; border-radius:10px; padding:14px 18px; margin:14px 0;">
-                <div style="color:#065F46; font-weight:700; font-size:0.92rem;">✓ Report Generated Successfully ({len(stored[1]) / 1024:.0f} KB)</div>
-                <div style="color:#047857; font-size:0.82rem; margin-top:2px;">Ready for distribution to the Credit Risk Committee.</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        st.download_button(
-            "⬇️ Download PDF Report Pack",
-            stored[1],
-            file_name=f"DriftGuard_Risk_Report_{safe_name}_job{choice['job_id']}.pdf",
-            mime="application/pdf",
-        )
+        safe_name = "".join(ch if ch.isalnum() or ch in "_-" else "_" for ch in choice["batch_id"])
+        with col_dl:
+            st.download_button(
+                f"Download PDF ({len(stored[1]) / 1024:.0f} KB)",
+                stored[1],
+                file_name=f"DriftGuard_Risk_Report_{safe_name}_job{choice['job_id']}.pdf",
+                mime="application/pdf",
+                type="primary",
+                width="stretch",
+                icon=":material/download:",
+            )
+        info_callout("success", f"PDF compiled ({len(stored[1]) / 1024:.0f} KB) and ready for distribution.")
 
-    st.markdown("#### 📑 Report Contents & Governance Structure")
+    section("Report Sections Included")
     st.markdown(
         """
-        - **Section 1–2:** Monitoring Executive Summary & 2020 Historical Baseline Configuration  
-        - **Section 3–4:** 2026 Production Batch Details & Verified Customer Record Counts  
-        - **Section 5:** Attribute-by-Attribute PSI, Kolmogorov-Smirnov & Jensen-Shannon Tests  
-        - **Section 6:** Drift Impact Score (DIS) Decomposition & SHAP Model Sensitivity  
-        - **Section 7:** High-Risk Distorted Financial Attributes & Distribution Overlays  
-        - **Section 8:** Credit Model Performance Verification (when default labels are present)  
-        - **Section 9–11:** Governance Directives, Committee Recommended Actions & Cryptographic Audit Hash  
+        - **Sections 1–4:** Executive summary, 2020 baseline configuration, production batch metadata & customer counts
+        - **Sections 5–7:** Attribute-level PSI / KS / JSD tests, DIS decomposition (D × FI × S), and distribution overlays
+        - **Sections 8–11:** Model performance verification (when labels exist), committee directives & audit hash
         """
     )
 
-    logs = (
-        safe(
-            lambda: api.get("/audit-logs", {"event": "report_generated", "limit": 20}),
-            {},
-        )
-        or {}
-    )
+    logs = safe(lambda: api.get("/audit-logs", {"event": "report_generated", "limit": 20}), {}) or {}
+    section("Recently Generated Reports")
     if logs.get("events"):
-        st.markdown("#### 🕒 Audit Trail: Recently Generated Reports")
         st.dataframe(
             pd.DataFrame(
                 [
                     {
-                        "Generated At": e["timestamp"],
+                        "Generated At": format_timestamp(e.get("timestamp")),
                         "Generated By": e["user_email"],
                         "Job ID": e["details"].get("job_id"),
-                        "Batch Monitored": e["details"].get("batch_id"),
+                        "Batch": e["details"].get("batch_id"),
                     }
                     for e in logs["events"]
                 ]
@@ -110,3 +127,5 @@ def render() -> None:
             hide_index=True,
             width="stretch",
         )
+    else:
+        empty_state("NO HISTORY", "No PDF reports exported yet", "Click Compile PDF Report above to generate one.")

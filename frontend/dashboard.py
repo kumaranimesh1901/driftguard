@@ -1,4 +1,4 @@
-"""DriftGuard — Banking Customer Drift Monitoring Dashboard.
+"""DriftGuard — Credit-Risk Model Monitoring Console.
 
 The user-facing application for credit-risk model surveillance and distribution
 drift monitoring. All statistics (PSI, KS, JSD, DIS, model health, recommendations,
@@ -23,35 +23,31 @@ from sections import (
 )
 
 st.set_page_config(
-    page_title="DriftGuard · Banking Model Surveillance",
+    page_title="DriftGuard · Credit Model Monitoring",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 apply_theme()
 
-SECTIONS = {
-    "Overview": overview.render,
-    "Dataset Management": datasets.render,
-    "Customer Drift Analysis": drift_analysis.render,
-    "Drift Impact Score": drift_impact.render,
-    "Batch Monitoring": batch_monitoring.render,
-    "Risk Recommendations": recommendations.render,
-    "Model Health": model_health.render,
-    "Model Versions & Retraining": model_versions.render,
-    "Reports": reports.render,
-}
-
-SECTION_ICONS = {
-    "Overview": "📊",
-    "Dataset Management": "📁",
-    "Customer Drift Analysis": "📈",
-    "Drift Impact Score": "⚡",
-    "Batch Monitoring": "📦",
-    "Risk Recommendations": "🛡️",
-    "Model Health": "🩺",
-    "Model Versions & Retraining": "🔁",
-    "Reports": "📄",
+NAV_GROUPS: dict[str, list[tuple[str, str, str, object]]] = {
+    "Monitor": [
+        ("Overview", "overview", ":material/dashboard:", overview.render),
+        ("Batch Monitoring", "batch-monitoring", ":material/inventory_2:", batch_monitoring.render),
+        ("Customer Drift Analysis", "drift-analysis", ":material/query_stats:", drift_analysis.render),
+        ("Drift Impact Score", "drift-impact", ":material/bolt:", drift_impact.render),
+    ],
+    "Model": [
+        ("Model Health", "model-health", ":material/monitor_heart:", model_health.render),
+        ("Model Versions & Retraining", "model-versions", ":material/history:", model_versions.render),
+    ],
+    "Act": [
+        ("Risk Recommendations", "recommendations", ":material/shield:", recommendations.render),
+        ("Reports", "reports", ":material/description:", reports.render),
+    ],
+    "Data": [
+        ("Dataset Management", "datasets", ":material/database:", datasets.render),
+    ],
 }
 
 
@@ -66,18 +62,16 @@ def _sign_in(email: str, password: str) -> None:
 
 
 def sign_in_screen() -> None:
-    """Polished modern sign-in screen with quick 1-click demo access."""
-    _, middle, _ = st.columns([1, 1.4, 1])
+    """Centred sign-in screen with quick demo access."""
+    _, middle, _ = st.columns([1, 1.35, 1])
     with middle:
         st.markdown("<div style='height:4vh'></div>", unsafe_allow_html=True)
         st.markdown(
             """
-            <div style="text-align: center; margin-bottom: 24px;">
-                <div style="display: inline-flex; align-items: center; justify-content: center; width: 68px; height: 68px; background: linear-gradient(135deg, #2563EB 0%, #1D4ED8 100%); border-radius: 18px; box-shadow: 0 10px 24px rgba(37, 99, 235, 0.28); margin-bottom: 14px;">
-                    <span style="font-size: 34px;">🛡️</span>
-                </div>
-                <h1 style="font-size: 2rem; font-weight: 800; color: #0F172A; margin: 0; letter-spacing: -0.03em;">DriftGuard</h1>
-                <p style="color: #64748B; font-size: 0.95rem; margin: 6px 0 0 0;">Banking Customer & Credit Model Surveillance Platform</p>
+            <div style="text-align: center; margin-bottom: 22px;">
+                <div style="display: inline-flex; align-items: center; justify-content: center; width: 56px; height: 56px; background: #2563EB; border-radius: 14px; box-shadow: 0 8px 20px rgba(37, 99, 235, 0.25); margin-bottom: 12px; color: #FFFFFF; font-weight: 800; font-size: 24px;">DG</div>
+                <h1 style="font-size: 1.85rem; font-weight: 700; color: #0F172A; margin: 0; letter-spacing: -0.025em;">DriftGuard</h1>
+                <p style="color: #64748B; font-size: 0.92rem; margin: 6px 0 0 0;">Data-drift detection and model monitoring for credit risk</p>
             </div>
             """,
             unsafe_allow_html=True,
@@ -96,7 +90,7 @@ def sign_in_screen() -> None:
 
         status = safe(lambda: api.auth_status(), {}) or {}
         if status.get("has_users") is False:
-            st.info("👋 Welcome! Create the initial administrator account to get started.")
+            st.info("Create the initial administrator account to get started.")
             with st.form("first_admin"):
                 name = st.text_input("Full name", placeholder="e.g. Jane Doe")
                 email = st.text_input("Work Email", placeholder="e.g. admin@bank.com")
@@ -114,128 +108,139 @@ def sign_in_screen() -> None:
                     _sign_in(email, password)
             return
 
-        # 1-Click Demo Section
         with st.container():
             st.markdown(
                 """
-                <div style="background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 12px; padding: 16px 18px; margin-bottom: 18px; box-shadow: 0 1px 3px rgba(15,23,42,0.04);">
-                    <div style="font-size: 0.8rem; font-weight: 700; color: #1E40AF; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px;">⚡ Quick Demo Access</div>
-                    <div style="font-size: 0.85rem; color: #64748B; margin-bottom: 12px;">Sign in instantly using pre-configured test profiles:</div>
+                <div style="background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 12px; padding: 14px 16px; margin-bottom: 14px;">
+                    <div style="font-size: 0.74rem; font-weight: 700; color: #1E40AF; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px;">Quick Demo Access</div>
+                    <div style="font-size: 0.84rem; color: #64748B;">Sign in with a pre-configured demonstration profile:</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
             col_admin, col_analyst = st.columns(2)
             with col_admin:
-                if st.button("👑 Administrator\n(Full Platform)", key="demo_admin", width="stretch"):
+                if st.button("Administrator (Full)", key="demo_admin", width="stretch"):
                     _sign_in("admin@example.com", "AdminPassword123")
             with col_analyst:
-                if st.button("📊 Risk Analyst\n(Surveillance & Upload)", key="demo_analyst", width="stretch"):
+                if st.button("Risk Analyst (Upload)", key="demo_analyst", width="stretch"):
                     _sign_in("analyst@example.com", "AnalystPassword123")
 
         st.markdown(
-            "<div style='margin: 18px 0 12px 0; text-align: center; color: #94A3B8; font-size: 0.82rem; font-weight: 600;'>— OR ENTER YOUR CREDENTIALS —</div>",
+            "<div style='margin: 16px 0 10px 0; text-align: center; color: #94A3B8; font-size: 0.78rem; font-weight: 600; letter-spacing: 0.04em;'>OR SIGN IN WITH CREDENTIALS</div>",
             unsafe_allow_html=True,
         )
 
         with st.form("login"):
             email = st.text_input("Work Email", placeholder="admin@example.com")
             password = st.text_input("Password", type="password", placeholder="••••••••••••")
-            if st.form_submit_button("Sign In to DriftGuard", type="primary", width="stretch"):
+            if st.form_submit_button("Sign In", type="primary", width="stretch"):
                 _sign_in(email, password)
 
-        # Telemetry badge
         st.markdown(
             f"""
-            <div style="text-align: center; margin-top: 24px; padding-top: 14px; border-top: 1px solid #E2E8F0; font-size: 0.78rem; color: #64748B;">
-                <span style="color: #16A34A; font-weight: 700;">● System Online</span> &nbsp;·&nbsp; PostgreSQL: {health.get('postgres', 'connected')} &nbsp;·&nbsp; MongoDB: {health.get('mongo', 'connected')}
+            <div style="text-align: center; margin-top: 20px; padding-top: 12px; border-top: 1px solid #E2E8F0; font-size: 0.76rem; color: #64748B;">
+                <span style="color: #16A34A; font-weight: 600;">● System Online</span>
+                &nbsp;·&nbsp; PostgreSQL: {health.get('postgres', 'connected')}
+                &nbsp;·&nbsp; MongoDB: {health.get('mongo', 'connected')}
             </div>
             """,
             unsafe_allow_html=True,
         )
 
 
-def sidebar() -> str:
-    """Rich sidebar navigation and session telemetry."""
+def _render_sidebar_chrome() -> None:
+    """Test-batch toggle, compact user card, live health dots, and actions."""
     with st.sidebar:
-        # Branding
-        st.markdown(
-            """
-            <div style="display: flex; align-items: center; gap: 12px; padding: 4px 0 14px 0;">
-                <div style="display: flex; align-items: center; justify-content: center; width: 42px; height: 42px; background: linear-gradient(135deg, #2563EB 0%, #1E40AF 100%); border-radius: 12px; font-size: 22px; box-shadow: 0 4px 10px rgba(0,0,0,0.25);">🛡️</div>
-                <div>
-                    <div style="font-weight: 800; font-size: 1.2rem; color: #FFFFFF; letter-spacing: -0.02em;">DriftGuard</div>
-                    <div style="font-size: 0.75rem; color: #94A3B8; font-weight: 500;">Credit Surveillance v0.1</div>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+        st.divider()
+
+        if "hide_test_batches" not in st.session_state:
+            st.session_state["hide_test_batches"] = True
+        st.toggle(
+            "Hide test batches (UI_Test_*)",
+            key="hide_test_batches",
+            help="Excludes UI_Test_* batches from Overview, Batch Monitoring and selectors without deleting database records.",
         )
 
-        # User Card
+        # Compact User Card
         name = st.session_state.get("name") or "User"
         email = st.session_state.get("email") or ""
         role = st.session_state.get("role") or "reviewer"
-        role_badge_color = (
-            "#3B82F6" if role == "administrator" else ("#10B981" if role == "analyst" else "#94A3B8")
+        role_colour = (
+            "#60A5FA" if role == "administrator" else ("#34D399" if role == "analyst" else "#94A3B8")
         )
+        st.markdown(
+            f"""
+            <div style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.09); border-radius: 10px; padding: 10px 12px; margin: 10px 0 8px 0;">
+                <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px;">
+                    <div style="font-size: 0.84rem; font-weight: 600; color: #F8FAFC; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{name}</div>
+                    <span style="background: {role_colour}22; color: {role_colour}; border: 1px solid {role_colour}44; font-size: 0.65rem; font-weight: 700; padding: 1px 7px; border-radius: 9999px; text-transform: uppercase; letter-spacing: 0.04em;">{role}</span>
+                </div>
+                <div style="font-size: 0.72rem; color: #94A3B8; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{email}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # Live 3-dot service status from /health
+        h = api.health()
+        api_ok = h is not None and h.get("status") == "ok"
+        pg_ok = bool(h and h.get("postgres") == "connected")
+        mongo_ok = bool(h and h.get("mongo") == "connected")
+
+        def _dot(ok: bool, label: str) -> str:
+            colour = "#16A34A" if ok else "#DC2626"
+            return (
+                f'<span style="display:inline-flex;align-items:center;gap:5px;font-size:0.72rem;color:#CBD5E1;">'
+                f'<span style="width:7px;height:7px;border-radius:50%;background:{colour};display:inline-block;"></span>'
+                f"{label}</span>"
+            )
 
         st.markdown(
             f"""
-            <div style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 10px; padding: 12px 14px; margin-bottom: 14px;">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <div style="font-size: 0.88rem; font-weight: 700; color: #FFFFFF;">👤 {name}</div>
-                    <span style="background: {role_badge_color}22; color: {role_badge_color}; border: 1px solid {role_badge_color}55; font-size: 0.68rem; font-weight: 700; padding: 2px 8px; border-radius: 9999px; text-transform: uppercase; letter-spacing: 0.04em;">{role}</span>
-                </div>
-                <div style="font-size: 0.74rem; color: #94A3B8; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{email}</div>
+            <div style="background: rgba(0,0,0,0.22); border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
+                {_dot(pg_ok, "PostgreSQL")}
+                {_dot(mongo_ok, "MongoDB")}
+                {_dot(api_ok, "API")}
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-        st.markdown(
-            "<div style='font-size: 0.72rem; font-weight: 700; color: #64748B; text-transform: uppercase; letter-spacing: 0.06em; margin: 12px 0 6px 0;'>Navigation</div>",
-            unsafe_allow_html=True,
-        )
-
-        section = st.radio(
-            "Navigation",
-            list(SECTIONS),
-            key="nav",
-            label_visibility="collapsed",
-            format_func=lambda s: f"{SECTION_ICONS.get(s, '•')}  {s}",
-        )
-
-        st.divider()
-
-        # Action Buttons
-        if st.button("↻  Refresh Surveillance Data", width="stretch"):
+        if st.button("Refresh data", type="secondary", width="stretch", icon=":material/refresh:"):
             api.bump()
             st.rerun()
 
-        if st.button("Log Out", width="stretch"):
-            for key in ("token", "role", "name", "email", "pdf", "selected_job"):
+        if st.button("Log out", type="tertiary", width="stretch", icon=":material/logout:"):
+            for key in ("token", "role", "name", "email", "pdf", "selected_job", "selected_batch_id"):
                 st.session_state.pop(key, None)
             st.rerun()
 
-        # Telemetry footer
-        st.markdown(
-            """
-            <div style="background: rgba(0,0,0,0.25); border-radius: 8px; padding: 10px 12px; margin-top: 14px; font-size: 0.72rem; color: #94A3B8;">
-                <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 4px;">
-                    <span style="width: 7px; height: 7px; border-radius: 50%; background: #10B981; display: inline-block;"></span>
-                    <span style="color: #E2E8F0; font-weight: 600;">System Online</span>
-                </div>
-                <div>PostgreSQL · MongoDB · FastAPI</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
 
-    return section
+def main() -> None:
+    if not st.session_state.get("token"):
+        login_page = st.Page(sign_in_screen, title="Sign In", url_path="login", default=True)
+        pg = st.navigation([login_page], position="hidden")
+        pg.run()
+        return
+
+    test_target = st.session_state.get("_test_page")
+    nav_pages: dict[str, list[st.Page]] = {}
+    for group, items in NAV_GROUPS.items():
+        nav_pages[group] = [
+            st.Page(
+                fn,
+                title=title,
+                url_path=slug,
+                icon=icon,
+                default=(slug == test_target) if test_target else (slug == "overview"),
+            )
+            for title, slug, icon, fn in items
+        ]
+
+    pg = st.navigation(nav_pages, position="sidebar")
+    _render_sidebar_chrome()
+    pg.run()
 
 
-if not st.session_state.get("token"):
-    sign_in_screen()
-else:
-    SECTIONS[sidebar()]()
+main()
